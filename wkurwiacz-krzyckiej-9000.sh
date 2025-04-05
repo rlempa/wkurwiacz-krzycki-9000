@@ -18,6 +18,17 @@ last_option2=0
 last_total=0
 last_status="WAITING"
 
+# Function to calculate percentage
+calculate_percentage() {
+    local value=$1
+    local total=$2
+    if [ "$total" -eq 0 ]; then
+        echo "0.00"
+    else
+        echo "scale=2; ($value * 100) / $total" | bc
+    fi
+}
+
 # Function to send POST request and get response
 send_request() {
     # Create a temporary file to store the response
@@ -51,21 +62,37 @@ send_request() {
     
     # Set status based on HTTP response code
     if [ "$status_code" -eq 200 ]; then
-        last_status="RUNNING"`
+        last_status="RUNNING"
     else
         last_status="WAITING"
         # Sleep for 5 seconds on any non-200 response
         sleep 5
     fi
     
+    # Calculate percentages
+    percent1=$(calculate_percentage $last_option1 $last_total)
+    percent2=$(calculate_percentage $last_option2 $last_total)
+    
     # Clear current line and display updated statistics
     printf "\r\033[K"  # Clear current line
     
+    # Determine colors based on which option is leading
+    if [ "$last_option1" -gt "$last_option2" ]; then
+        color1="\033[1;32m"  # Green for option 1
+        color2="\033[0m"     # Default for option 2
+    elif [ "$last_option2" -gt "$last_option1" ]; then
+        color1="\033[0m"     # Default for option 1
+        color2="\033[1;31m"  # Red for option 2
+    else
+        color1="\033[0m"     # Default color for option 1
+        color2="\033[0m"     # Default color for option 2
+    fi
+    
     # Display all statistics in a single line using last known values, with status first
     if [ "$last_status" = "RUNNING" ]; then
-        echo -en "Status: \033[1;32m$last_status\033[0m | Option 1: $last_option1 | Option 2: $last_option2 | Total: $last_total"
+        echo -en "Status: \033[1;32m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) | Option 2: $last_option2 (${color2}$percent2%\033[0m) | Total: $last_total"
     else
-        echo -en "Status: \033[1;31m$last_status\033[0m | Option 1: $last_option1 | Option 2: $last_option2 | Total: $last_total"
+        echo -en "Status: \033[1;31m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) | Option 2: $last_option2 (${color2}$percent2%\033[0m) | Total: $last_total"
     fi
 }
 
