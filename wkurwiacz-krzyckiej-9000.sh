@@ -51,7 +51,7 @@ send_request() {
     
     # Set status based on HTTP response code
     if [ "$status_code" -eq 200 ]; then
-        last_status="RUNNING"
+        last_status="RUNNING"`
     else
         last_status="WAITING"
         # Sleep for 5 seconds on any non-200 response
@@ -72,7 +72,7 @@ send_request() {
 # Main loop
 while true; do
     send_request
-    sleep 0.4
+    sleep 0.2
     
     # Check for ESC key press without blocking
     if read -t 1 -n 1 key; then
