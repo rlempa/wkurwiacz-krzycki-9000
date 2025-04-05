@@ -9,7 +9,7 @@ echo "██║███╗██║██╔═██╗      ╚═══█�
 echo "╚███╔███╔╝██║  ██╗    ██████╔╝╚██████╔╝╚██████╔╝╚██████╔╝"
 echo " ╚══╝╚══╝ ╚═╝  ╚═╝    ╚═════╝  ╚═════╝  ╚═════╝  ╚═════╝ "
 echo -e "\033[0m"
-echo "Press ESC to exit."
+echo "Press Ctrl+C (Windows/Linux) or Command+C (Mac) to exit."
 echo "" # Empty line for spacing
 
 # Initialize variables to store last known values
@@ -27,6 +27,9 @@ start_option2=0
 start_total=0
 last_completed_gain1=0
 last_completed_gain2=0
+request_count=0
+last_request_time=$(date +%s)
+requests_per_second=0
 
 # Function to calculate percentage
 calculate_percentage() {
@@ -76,6 +79,13 @@ send_request() {
     response=$(cat "$temp_file")
     rm "$temp_file"
     
+    # Update request count and calculate requests per second
+    request_count=$((request_count + 1))
+    current_time=$(date +%s)
+    if [ "$current_time" -gt "$last_request_time" ]; then
+        requests_per_second=$((request_count / (current_time - last_request_time)))
+    fi
+    
     # Parse statistics, using last known values if parsing fails
     new_option1=$(echo $response | grep -o '"count":[0-9]*' | head -1 | cut -d':' -f2)
     new_option2=$(echo $response | grep -o '"count":[0-9]*' | tail -1 | cut -d':' -f2)
@@ -87,8 +97,6 @@ send_request() {
         last_option2=$new_option2
         last_total=$new_total
     fi
-    
-    current_time=$(date +%s)
     
     # Set status based on HTTP response code
     if [ "$status_code" -eq 200 ]; then
@@ -162,21 +170,13 @@ send_request() {
     
     # Display all statistics in a single line using last known values, with status first
     if [ "$last_status" = "RUNNING" ]; then
-        echo -en "Status: \033[1;32m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [${gain_color1}+$gain1\033[0m] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [${gain_color2}+$gain2\033[0m] | Total: $last_total | Last Wait: $formatted_waiting_duration | Last Run: $formatted_last_running_duration"
+        echo -en "Status: \033[1;32m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [${gain_color1}+$gain1\033[0m] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [${gain_color2}+$gain2\033[0m] | Total: $last_total | Last Wait: $formatted_waiting_duration | Last Run: $formatted_last_running_duration | RPS: $requests_per_second"
     else
-        echo -en "Status: \033[1;31m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [${gain_color1}+$gain1\033[0m] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [${gain_color2}+$gain2\033[0m] | Total: $last_total | Last Wait: $formatted_waiting_duration | Last Run: $formatted_last_running_duration"
+        echo -en "Status: \033[1;31m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [${gain_color1}+$gain1\033[0m] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [${gain_color2}+$gain2\033[0m] | Total: $last_total | Last Wait: $formatted_waiting_duration | Last Run: $formatted_last_running_duration | RPS: $requests_per_second"
     fi
 }
 
 # Main loop
 while true; do
     send_request
-    
-    # Check for ESC key press without blocking
-    if read -t 1 -n 1 key; then
-        if [[ "$key" == $'\e' ]]; then
-            echo -e "\nExiting script..."
-            exit 0
-        fi
-    fi
 done 
