@@ -17,6 +17,16 @@ last_option1=0
 last_option2=0
 last_total=0
 last_status="WAITING"
+waiting_start_time=$(date +%s)  # Initialize with current time
+last_waiting_duration=0
+running_start_time=0
+last_running_duration=0
+script_start_time=$(date +%s)
+start_option1=0
+start_option2=0
+start_total=0
+last_completed_gain1=0
+last_completed_gain2=0
 
 # Function to calculate percentage
 calculate_percentage() {
@@ -26,6 +36,24 @@ calculate_percentage() {
         echo "0.00"
     else
         echo "scale=2; ($value * 100) / $total" | bc
+    fi
+}
+
+# Function to format duration in seconds to human readable format
+format_duration() {
+    local seconds=$1
+    if [ "$seconds" -lt 60 ]; then
+        echo "${seconds}s"
+    else
+        local minutes=$((seconds / 60))
+        local remaining_seconds=$((seconds % 60))
+        if [ "$minutes" -lt 60 ]; then
+            echo "${minutes}m ${remaining_seconds}s"
+        else
+            local hours=$((minutes / 60))
+            local remaining_minutes=$((minutes % 60))
+            echo "${hours}h ${remaining_minutes}m ${remaining_seconds}s"
+        fi
     fi
 }
 
@@ -60,23 +88,51 @@ send_request() {
         last_total=$new_total
     fi
     
+    current_time=$(date +%s)
+    
     # Set status based on HTTP response code
     if [ "$status_code" -eq 200 ]; then
+        if [ "$last_status" = "WAITING" ]; then
+            # Calculate waiting duration when transitioning from WAITING to RUNNING
+            last_waiting_duration=$((current_time - waiting_start_time))
+            running_start_time=$current_time  # Start new running period
+            # Store the starting values for this running period
+            start_option1=$last_option1
+            start_option2=$last_option2
+            start_total=$last_total
+        fi
         last_status="RUNNING"
     else
+        if [ "$last_status" = "RUNNING" ]; then
+            # Calculate and store the last running duration when transitioning from RUNNING to WAITING
+            last_running_duration=$((current_time - running_start_time))
+            # Store the gains from the completed run
+            last_completed_gain1=$((last_option1 - start_option1))
+            last_completed_gain2=$((last_option2 - start_option2))
+            # Start tracking waiting time
+            waiting_start_time=$current_time
+        fi
         last_status="WAITING"
-        # Sleep for 5 seconds on any non-200 response
-        sleep 5
     fi
     
     # Calculate percentages
     percent1=$(calculate_percentage $last_option1 $last_total)
     percent2=$(calculate_percentage $last_option2 $last_total)
     
+    # Calculate vote gains from the start of the running period
+    if [ "$last_status" = "RUNNING" ]; then
+        gain1=$((last_option1 - start_option1))
+        gain2=$((last_option2 - start_option2))
+    else
+        # Use the gains from the last completed run
+        gain1=$last_completed_gain1
+        gain2=$last_completed_gain2
+    fi
+    
     # Clear current line and display updated statistics
     printf "\r\033[K"  # Clear current line
     
-    # Determine colors based on which option is leading
+    # Determine colors based on which option is leading in total votes
     if [ "$last_option1" -gt "$last_option2" ]; then
         color1="\033[1;32m"  # Green for option 1
         color2="\033[0m"     # Default for option 2
@@ -88,18 +144,33 @@ send_request() {
         color2="\033[0m"     # Default color for option 2
     fi
     
+    # Determine colors for gains
+    if [ "$gain1" -gt "$gain2" ]; then
+        gain_color1="\033[1;32m"  # Green for gain 1
+        gain_color2="\033[0m"     # Default for gain 2
+    elif [ "$gain2" -gt "$gain1" ]; then
+        gain_color1="\033[0m"     # Default for gain 1
+        gain_color2="\033[1;31m"  # Red for gain 2
+    else
+        gain_color1="\033[0m"     # Default color for gain 1
+        gain_color2="\033[0m"     # Default color for gain 2
+    fi
+    
+    # Format durations
+    formatted_waiting_duration=$(format_duration $last_waiting_duration)
+    formatted_last_running_duration=$(format_duration $last_running_duration)
+    
     # Display all statistics in a single line using last known values, with status first
     if [ "$last_status" = "RUNNING" ]; then
-        echo -en "Status: \033[1;32m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) | Option 2: $last_option2 (${color2}$percent2%\033[0m) | Total: $last_total"
+        echo -en "Status: \033[1;32m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [${gain_color1}+$gain1\033[0m] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [${gain_color2}+$gain2\033[0m] | Total: $last_total | Last Wait: $formatted_waiting_duration | Last Run: $formatted_last_running_duration"
     else
-        echo -en "Status: \033[1;31m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) | Option 2: $last_option2 (${color2}$percent2%\033[0m) | Total: $last_total"
+        echo -en "Status: \033[1;31m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [${gain_color1}+$gain1\033[0m] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [${gain_color2}+$gain2\033[0m] | Total: $last_total | Last Wait: $formatted_waiting_duration | Last Run: $formatted_last_running_duration"
     fi
 }
 
 # Main loop
 while true; do
     send_request
-    sleep 0.2
     
     # Check for ESC key press without blocking
     if read -t 1 -n 1 key; then
