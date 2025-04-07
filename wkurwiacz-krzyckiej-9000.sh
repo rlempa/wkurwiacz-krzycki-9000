@@ -6,7 +6,7 @@ GRAPH_HEIGHT_SET=0
 GRAPH_WIDTH_SET=0
 
 # Parse command-line arguments
-declare -A PARAMS=([poll]=1898 [option]=6830 [sleep-running]=2 [sleep-waiting]=10 [graph-height]=30 [graph-width]=$(($TERM_WIDTH - 30)) [history-size]=120 [graph-interval]=1 [sleep-randomness]=50 [debug]=0 [auto-adjust]=0 [log-dir]="/var/log/wkurwiacz_logs")
+declare -A PARAMS=([poll]=1898 [option]=6830 [sleep-running]=2 [sleep-waiting]=60 [graph-height]=30 [graph-width]=$(($TERM_WIDTH - 30)) [history-size]=120 [graph-interval]=1 [sleep-randomness]=30 [debug]=0 [auto-adjust]=0 [log-dir]="/var/log/wkurwiacz/")
 
 # Process command-line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -66,9 +66,11 @@ DEBUG_LOG="$LOG_DIR/debug.log"
 
 # Initialize logs
 echo "=== WKURWIACZ KRZYCKI 9000 LOG STARTED AT $(date +'%Y-%m-%d %H:%M:%S') ===" > "$MAIN_LOG"
-echo "=== DEBUG LOG STARTED AT $(date +'%Y-%m-%d %H:%M:%S') ===" > "$DEBUG_LOG"
 echo "Debug mode: $DEBUG_MODE" >> "$MAIN_LOG"
 echo "Log directory: $LOG_DIR" >> "$MAIN_LOG"
+if [ "${DEBUG_MODE:-0}" -eq 1 ]; then
+    echo "=== DEBUG LOG STARTED AT $(date +'%Y-%m-%d %H:%M:%S') ===" > "$DEBUG_LOG"
+fi
 
 # Function to format timestamp
 format_timestamp() {
@@ -323,10 +325,9 @@ check_poll_status() {
     # Try to get poll information with a GET request
     poll_info=$(curl -s -v "https://www.wroclaw.pl/api/quiz/api/polls/$POLL_ID" \
     -H "Accept: application/json" \
-    -H "User-Agent: $random_user_agent" \
-    2> "$status_log")
+    -H "User-Agent: $random_user_agent")
 
-    echo "$poll_info" > "${status_log}_response.json"
+    echo "$poll_info" > "${status_log}.json"
 
     if [ -n "$poll_info" ]; then
         log_message "Successfully retrieved poll information"
@@ -683,13 +684,11 @@ send_request() {
         if [ $error_rate -ge 5 ]; then
             # Too many errors, increase sleep time
             SLEEP_RUNNING=$(echo "scale=2; $SLEEP_RUNNING * 1.5" | bc)
-            SLEEP_WAITING=$(echo "scale=2; $SLEEP_WAITING * 1.5" | bc)
-            log_message "Auto-adjusted sleep time to $SLEEP_RUNNING due to high error rate"
+            log_message "Increasing sleep time to $SLEEP_RUNNING due to $error_rate% error rate"
         elif [ $error_rate -lt 5 ] && (( $(echo "$SLEEP_RUNNING > 0.2" | bc -l) )); then
             # Very few errors, try to speed up slightly
             SLEEP_RUNNING=$(echo "scale=2; $SLEEP_RUNNING * 0.9" | bc)
-            SLEEP_WAITING=$(echo "scale=2; $SLEEP_WAITING * 0.9" | bc)
-            log_message "Auto-adjusted sleep time to $SLEEP_RUNNING due to low error rate"
+            log_message "Decreasing sleep time to $SLEEP_RUNNING due to $error_rate% error rate"
         fi
     fi
 
@@ -888,9 +887,9 @@ send_request() {
 
     # Check if we need to redraw the graph
     if [ $iteration_count -eq 1 ] || [ $((iteration_count % GRAPH_INTERVAL)) -eq 0 ]; then
-        log_message "Redrawing graph at iteration $iteration_count"
         draw_graph
     fi
+    log_message "Status: $last_status | Option 1: $last_option1 $percent1 [+$gain1] | Option 2: $last_option2 $percent2 [+$gain2] | Total: $last_total | RPS: $requests_per_second | Error rate: $error_rate%"
 }
 
 read_key_input() {
@@ -933,6 +932,6 @@ while true; do
     if [ "$last_status" = "RUNNING" ]; then
         sleep $(apply_sleep_randomness $SLEEP_RUNNING)
     else
-        sleep $(apply_sleep_randomness $SLEEP_WAITING)
+        sleep $SLEEP_WAITING
     fi
 done
