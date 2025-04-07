@@ -1,10 +1,12 @@
 #!/bin/bash
 
 # Get terminal width with adjustment for left margin (8 spaces + "|" + space = 10 chars) plus 1 extra char
-TERM_WIDTH=$(( $(tput cols 2>/dev/null || echo 120) - 13 ))
+TERM_WIDTH=$(tput cols 2>/dev/null || echo 120)
+GRAPH_HEIGHT_SET=0
+GRAPH_WIDTH_SET=0
 
 # Parse command-line arguments
-declare -A PARAMS=([poll]=1898 [option]=6830 [sleep-running]=2 [sleep-waiting]=2 [graph-height]=30 [graph-width]=$TERM_WIDTH [history-size]=120 [graph-interval]=1 [sleep-randomness]=50 [debug]=0 [auto-adjust]=0 [log-dir]="/var/log/wkurwiacz_logs")
+declare -A PARAMS=([poll]=1898 [option]=6830 [sleep-running]=2 [sleep-waiting]=10 [graph-height]=30 [graph-width]=$(($TERM_WIDTH - 30)) [history-size]=120 [graph-interval]=1 [sleep-randomness]=50 [debug]=0 [auto-adjust]=0 [log-dir]="/var/log/wkurwiacz_logs")
 
 # Process command-line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -14,8 +16,8 @@ while [[ "$#" -gt 0 ]]; do
         --sleep-running=*) SLEEP_RUNNING="${1#*=}" ;;
         --sleep-waiting=*) SLEEP_WAITING="${1#*=}" ;;
         --sleep-randomness=*) SLEEP_RANDOMNESS="${1#*=}" ;;
-        --graph-height=*) GRAPH_HEIGHT="${1#*=}" ;;
-        --graph-width=*) GRAPH_WIDTH="${1#*=}" ;;
+        --graph-height=*) GRAPH_HEIGHT="${1#*=}"; GRAPH_HEIGHT_SET=1 ;;
+        --graph-width=*) GRAPH_WIDTH="${1#*=}"; GRAPH_WIDTH_SET=1 ;;
         --history-size=*) HISTORY_SIZE="${1#*=}" ;;
         --graph-interval=*) GRAPH_INTERVAL="${1#*=}" ;;
         --log-dir=*) LOG_DIR="${1#*=}" ;;
@@ -109,12 +111,12 @@ display_logo() {
 
     # Basic logo lines
     local logo=(
-        "██╗    ██╗██╗  ██╗    ██████╗  ██████╗  ██████╗  ██████╗ "
-        "██║    ██║██║ ██╔╝    ██╔═══██╗██╔═══██╗██╔═══██╗██╔═══██╗"
-        "██║ █╗ ██║█████╔╝     ╚█████╔╝██║   ██║██║   ██║██║   ██║"
-        "██║███╗██║██╔═██╗      ╚═══██╗██║   ██║██║   ██║██║   ██║"
-        "╚███╔███╔╝██║  ██╗    ██████╔╝╚██████╔╝╚██████╔╝╚██████╔╝"
-        " ╚══╝╚══╝ ╚═╝  ╚═╝    ╚═════╝  ╚═════╝  ╚═════╝  ╚═════╝ "
+        "  ██╗    ██╗██╗  ██╗     █████╗  ██████╗  ██████╗  ██████╗   "
+        "  ██║    ██║██║ ██╔╝    ██╔══██╗██╔═══██╗██╔═══██╗██╔═══██╗  "
+        "  ██║ █╗ ██║█████╔╝     ╚█████╔╝██║   ██║██║   ██║██║   ██║  "
+        "  ██║███╗██║██╔═██╗      ╚═══██╗██║   ██║██║   ██║██║   ██║  "
+        "  ╚███╔███╔╝██║  ██╗    ██████╔╝╚██████╔╝╚██████╔╝╚██████╔╝  "
+        "   ╚══╝╚══╝ ╚═╝  ╚═╝    ╚═════╝  ╚═════╝  ╚═════╝  ╚═════╝   "
     )
 
     # Always start with a newline for consistent spacing
@@ -131,6 +133,7 @@ display_logo() {
             ;;
 
         1) # Color pulse - gradient red to yellow
+            echo -e "\033[1;31m"
             for i in {0..5}; do
                 # Color gradient from red to yellow
                 local color=$((31 + (i % 2)))
@@ -148,6 +151,7 @@ display_logo() {
             ;;
 
         3) # Bold flashing effect
+            echo -e "\033[1;31m"
             for i in {0..5}; do
                 if [ $((i % 2)) -eq 0 ]; then
                     echo -e "\033[1;31m${logo[$i]}\033[0m"  # Bright red
@@ -159,7 +163,7 @@ display_logo() {
             ;;
 
         4) # Cool blue variation
-            echo -e "\033[1;34m"  # Blue
+            echo -e "\033[1;31m"
             for line in "${logo[@]}"; do
                 echo "$line"
             done
@@ -204,6 +208,32 @@ iteration_count=0
 vote_start_time=$(date +%s)
 vote_start_count=0
 votes_contributed=0
+request_errors=0
+# Array of valid User-Agents
+user_agents=(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Safari/605.1.15"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:90.0) Gecko/20100101 Firefox/90.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 Edg/91.0.864.59"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36 Edg/91.0.864.59"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 OPR/77.0.4054.254"
+    "Mozilla/5.0 (iPad; CPU OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1"
+    "Mozilla/5.0 (Linux; Android 11; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
+    "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:90.0) Gecko/20100101 Firefox/90.0"
+    "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.101 Safari/537.36 Edg/91.0.864.48"
+    "Mozilla/5.0 (X11; Fedora; Linux x86_64; rv:89.0) Gecko/20100101 Firefox/89.0"
+    "Mozilla/5.0 (Linux; Android 10; SM-A205U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
+)
 
 # Initialize arrays for historical data
 declare -a option1_history=()
@@ -287,10 +317,12 @@ check_poll_status() {
     log_message "Checking poll status for ID=$POLL_ID"
     status_log="$LOG_DIR/poll_status_$(date +%Y%m%d_%H%M%S).log"
 
+    random_user_agent="${user_agents[RANDOM % ${#user_agents[@]}]}"
+
     # Try to get poll information with a GET request
     poll_info=$(curl -s -v "https://www.wroclaw.pl/api/quiz/api/polls/$POLL_ID" \
     -H "Accept: application/json" \
-    -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+    -H "User-Agent: $random_user_agent" \
     2> "$status_log")
 
     echo "$poll_info" > "${status_log}_response.json"
@@ -320,8 +352,18 @@ draw_graph() {
     clear
     display_logo
 
-    local width=$GRAPH_WIDTH
-    local height=$GRAPH_HEIGHT
+    if [ "$GRAPH_WIDTH_SET" -eq 1 ]; then
+        local width=$GRAPH_WIDTH
+    else
+        local width=$(( (GRAPH_WIDTH * 60) / 100 ))
+    fi
+
+    if [ "$GRAPH_HEIGHT_SET" -eq 1 ]; then
+        local height=$GRAPH_HEIGHT
+    else
+        local height=$(( (GRAPH_HEIGHT * 60) / 100 ))
+    fi
+
     local count=${#option1_history[@]}
 
     # Ensure height is not zero
@@ -604,10 +646,12 @@ send_request() {
     # Log the full curl command
     log_debug "Executing curl request: curl -X POST 'https://www.wroclaw.pl/api/quiz/api/polls/$POLL_ID/option/$OPTION_ID' -H 'Content-Type: application/json' -H 'User-Agent: Mozilla/5.0...' -d '{}'"
 
+    random_user_agent="${user_agents[RANDOM % ${#user_agents[@]}]}"
+
     # Send request with verbose output to log file and capture both status code and response
     status_code=$(curl -X POST "https://www.wroclaw.pl/api/quiz/api/polls/$POLL_ID/option/$OPTION_ID" \
     -H "Content-Type: application/json" \
-    -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+    -H "User-Agent: $random_user_agent" \
     -H "Accept: application/json" \
     -H "Origin: https://www.wroclaw.pl" \
     -H "Referer: https://www.wroclaw.pl/" \
@@ -620,9 +664,9 @@ send_request() {
         # Check if we're getting too many errors
         local error_rate=$((100 * request_errors / (request_count + 1)))
 
-        if [ $error_rate -gt 20 ]; then
+        if [ $error_rate -ge 5 ]; then
             # Too many errors, increase sleep time
-            SLEEP_RUNNING=$(echo "scale=2; $SLEEP_RUNNING * 1.2" | bc)
+            SLEEP_RUNNING=$(echo "scale=2; $SLEEP_RUNNING * 1.5" | bc)
             log_message "Auto-adjusted sleep time to $SLEEP_RUNNING due to high error rate"
         elif [ $error_rate -lt 5 ] && (( $(echo "$SLEEP_RUNNING > 0.2" | bc -l) )); then
             # Very few errors, try to speed up slightly
@@ -846,25 +890,6 @@ send_request() {
     fi
 }
 
-update_terminal_size() {
-    local new_width=$(( $(tput cols 2>/dev/null || echo 120) - 12 ))
-    local new_height=$(tput lines 2>/dev/null || echo 40)
-
-    # More proportional height adjustment: use 60% of terminal height for graph
-    new_height=$(( (new_height * 60) / 100 ))
-    if [ $new_height -lt 10 ]; then
-        new_height=10
-    fi
-
-    if [ $new_width -ne $GRAPH_WIDTH ] || [ $new_height -ne $GRAPH_HEIGHT ]; then
-        log_message "Terminal size changed. Adjusting graph: ${new_width}x${new_height}"
-        GRAPH_WIDTH=$new_width
-        GRAPH_HEIGHT=$new_height
-        return 0
-    fi
-    return 1
-}
-
 read_key_input() {
     if read -t 0.1 -n 1 key; then
         case "$key" in
@@ -895,19 +920,12 @@ if [ "$DEBUG_MODE" -ne 1 ]; then
     check_poll_status
 fi
 
-# Display the empty graph at startup
-clear
-draw_graph
-
 # Main loop
 while true; do
     read_key_input
     send_request
 
-    if update_terminal_size; then
-        # Force redraw if terminal size changed
-        draw_graph
-    fi
+    draw_graph
 
     if [ "$last_status" = "RUNNING" ]; then
         sleep $(apply_sleep_randomness $SLEEP_RUNNING)
