@@ -209,6 +209,7 @@ vote_start_time=$(date +%s)
 vote_start_count=0
 votes_contributed=0
 request_errors=0
+error_rate=0
 # Array of valid User-Agents
 user_agents=(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -630,6 +631,21 @@ draw_graph() {
 
     echo "Votes contributed: $votes_contributed (Rate: $votes_per_minute votes/min)"
 
+    # Format durations
+    formatted_waiting_duration=$(format_duration $last_waiting_duration)
+    formatted_last_running_duration=$(format_duration $last_running_duration)
+
+    local progress_chars=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")  # Simple ASCII spinner characters
+    local progress_idx=$((iteration_count % ${#progress_chars[@]}))
+    local progress_char=${progress_chars[$progress_idx]}
+
+    # Display status line with spinner at the end
+    if [ "$last_status" = "RUNNING" ]; then
+        echo -en "\rStatus: \033[1;32m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [+$gain1] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [+$gain2] | Total: $last_total | RPS: $requests_per_second | Error rate: $error_rate% |  \033[1;36m$progress_char\033[0m\n"
+    else
+        echo -en "\rStatus: \033[1;31m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [+$gain1] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [+$gain2] | Total: $last_total | RPS: $requests_per_second | Error rate: $error_rate% |  \033[1;36m$progress_char\033[0m\n"
+    fi
+
     # Show simple graph for debugging
     draw_simple_graph
 }
@@ -660,17 +676,19 @@ send_request() {
     -s -w "%{http_code}" \
     -o "$temp_file" 2> "$request_log")
 
-    if [ "$AUTO_ADJUST" -eq 1 ] && [ "$last_status" = "RUNNING" ]; then
+    if [ "$AUTO_ADJUST" -eq 1 ]; then
         # Check if we're getting too many errors
-        local error_rate=$((100 * request_errors / (request_count + 1)))
+        error_rate=$((100 * request_errors / (request_count + 1)))
 
         if [ $error_rate -ge 5 ]; then
             # Too many errors, increase sleep time
             SLEEP_RUNNING=$(echo "scale=2; $SLEEP_RUNNING * 1.5" | bc)
+            SLEEP_WAITING=$(echo "scale=2; $SLEEP_WAITING * 1.5" | bc)
             log_message "Auto-adjusted sleep time to $SLEEP_RUNNING due to high error rate"
         elif [ $error_rate -lt 5 ] && (( $(echo "$SLEEP_RUNNING > 0.2" | bc -l) )); then
             # Very few errors, try to speed up slightly
             SLEEP_RUNNING=$(echo "scale=2; $SLEEP_RUNNING * 0.9" | bc)
+            SLEEP_WAITING=$(echo "scale=2; $SLEEP_WAITING * 0.9" | bc)
             log_message "Auto-adjusted sleep time to $SLEEP_RUNNING due to low error rate"
         fi
     fi
@@ -868,25 +886,10 @@ send_request() {
         color2="\033[0m"     # Default color for option 2
     fi
 
-    # Format durations
-    formatted_waiting_duration=$(format_duration $last_waiting_duration)
-    formatted_last_running_duration=$(format_duration $last_running_duration)
-
-    local progress_chars=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")  # Simple ASCII spinner characters
-    local progress_idx=$((iteration_count % ${#progress_chars[@]}))
-    local progress_char=${progress_chars[$progress_idx]}
-
     # Check if we need to redraw the graph
     if [ $iteration_count -eq 1 ] || [ $((iteration_count % GRAPH_INTERVAL)) -eq 0 ]; then
         log_message "Redrawing graph at iteration $iteration_count"
         draw_graph
-    fi
-
-    # Display status line with spinner at the end
-    if [ "$last_status" = "RUNNING" ]; then
-        echo -en "\rStatus: \033[1;32m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [+$gain1] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [+$gain2] | Total: $last_total | RPS: $requests_per_second  \033[1;36m$progress_char\033[0m\n"
-    else
-        echo -en "\rStatus: \033[1;31m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [+$gain1] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [+$gain2] | Total: $last_total | RPS: $requests_per_second  \033[1;36m$progress_char\033[0m\n"
     fi
 }
 
