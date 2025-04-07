@@ -1,8 +1,12 @@
 #!/bin/bash
 
-# Parse command-line arguments
-declare -A PARAMS=([poll]=1898 [option]=6830 [sleep-running]=0.5 [sleep-waiting]=2 [graph-height]=15 [graph-width]=60 [history-size]=120 [graph-interval]=10 [sleep-randomness]=0)
+# Get terminal width with adjustment for left margin (8 spaces + "|" + space = 10 chars) plus 1 extra char
+TERM_WIDTH=$(( $(tput cols 2>/dev/null || echo 120) - 13 ))
 
+# Parse command-line arguments
+declare -A PARAMS=([poll]=1898 [option]=6830 [sleep-running]=2 [sleep-waiting]=2 [graph-height]=30 [graph-width]=$TERM_WIDTH [history-size]=120 [graph-interval]=1 [sleep-randomness]=50 [debug]=0 [auto-adjust]=0 [log-dir]="/var/log/wkurwiacz_logs")
+
+# Process command-line arguments
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --poll=*) POLL_ID="${1#*=}" ;;
@@ -14,6 +18,9 @@ while [[ "$#" -gt 0 ]]; do
         --graph-width=*) GRAPH_WIDTH="${1#*=}" ;;
         --history-size=*) HISTORY_SIZE="${1#*=}" ;;
         --graph-interval=*) GRAPH_INTERVAL="${1#*=}" ;;
+        --log-dir=*) LOG_DIR="${1#*=}" ;;
+        --debug) DEBUG_MODE=1 ;;
+        --auto-adjust) AUTO_ADJUST=1 ;;
         --help)
             echo "Usage: $0 [options]"
             echo "Options:"
@@ -22,10 +29,13 @@ while [[ "$#" -gt 0 ]]; do
             echo "  --sleep-running=N      Sleep duration in seconds when running (default: 0.5)"
             echo "  --sleep-waiting=N      Sleep duration in seconds when waiting (default: 2)"
             echo "  --sleep-randomness=P   Random variation percentage for sleep (0-100, default: 0)"
-            echo "  --graph-height=N       Height of the ASCII graph (default: 15)"
-            echo "  --graph-width=N        Width of the ASCII graph (default: 60)"
+            echo "  --graph-height=N       Height of the ASCII graph (default: 30)"
+            echo "  --graph-width=N        Width of the ASCII graph (default: 240)"
             echo "  --history-size=N       Number of data points to keep (default: 120)"
             echo "  --graph-interval=N     Show graph every N iterations (default: 10)"
+            echo "  --log-dir=PATH         Directory for log files (default: /var/log/wkurwiacz_logs)"
+            echo "  --debug                Enable debug mode (more verbose output)"
+            echo "  --auto-adjust          Automatically adjust sleep duration based on network latency"
             echo "  --help                 Show this help message"
             exit 0
             ;;
@@ -44,19 +54,133 @@ GRAPH_HEIGHT=${GRAPH_HEIGHT:-${PARAMS[graph-height]}}
 GRAPH_WIDTH=${GRAPH_WIDTH:-${PARAMS[graph-width]}}
 HISTORY_SIZE=${HISTORY_SIZE:-${PARAMS[history-size]}}
 GRAPH_INTERVAL=${GRAPH_INTERVAL:-${PARAMS[graph-interval]}}
+DEBUG_MODE=${DEBUG_MODE:-${PARAMS[debug]}}
+LOG_DIR=${LOG_DIR:-${PARAMS[log-dir]}}
 
-# Display beautiful ASCII art logo
-echo -e "\033[1;31m"
-echo "██╗    ██╗██╗  ██╗    ██████╗  ██████╗  ██████╗  ██████╗ "
-echo "██║    ██║██║ ██╔╝    ██╔═══██╗██╔═══██╗██╔═══██╗██╔═══██╗"
-echo "██║ █╗ ██║█████╔╝     ╚█████╔╝██║   ██║██║   ██║██║   ██║"
-echo "██║███╗██║██╔═██╗      ╚═══██╗██║   ██║██║   ██║██║   ██║"
-echo "╚███╔███╔╝██║  ██╗    ██████╔╝╚██████╔╝╚██████╔╝╚██████╔╝"
-echo " ╚══╝╚══╝ ╚═╝  ╚═╝    ╚═════╝  ╚═════╝  ╚═════╝  ╚═════╝ "
-echo -e "\033[0m"
-echo "Press Ctrl+C (Windows/Linux) or Command+C (Mac) to exit."
-echo "Using: Poll ID=$POLL_ID, Option ID=$OPTION_ID, Sleep Running=$SLEEP_RUNNING, Sleep Waiting=$SLEEP_WAITING, Randomness=$SLEEP_RANDOMNESS%"
-echo "" # Empty line for spacing
+# Set up logging
+mkdir -p "$LOG_DIR"
+MAIN_LOG="$LOG_DIR/main.log"
+DEBUG_LOG="$LOG_DIR/debug.log"
+
+# Initialize logs
+echo "=== WKURWIACZ KRZYCKI 9000 LOG STARTED AT $(date +'%Y-%m-%d %H:%M:%S') ===" > "$MAIN_LOG"
+echo "=== DEBUG LOG STARTED AT $(date +'%Y-%m-%d %H:%M:%S') ===" > "$DEBUG_LOG"
+echo "Debug mode: $DEBUG_MODE" >> "$MAIN_LOG"
+echo "Log directory: $LOG_DIR" >> "$MAIN_LOG"
+
+# Function to format timestamp
+format_timestamp() {
+    local timestamp=$1
+    date -d "@$timestamp" +'%H:%M:%S'
+}
+
+# Function to log messages
+log_message() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" >> "$MAIN_LOG"
+    if [ "$DEBUG_MODE" -eq 1 ]; then
+        echo -e "[LOG] $1"
+    fi
+}
+
+# Function to log debug info
+log_debug() {
+    if [ "$DEBUG_MODE" -eq 1 ]; then
+        echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" >> "$DEBUG_LOG"
+        echo -e "[DEBUG] $1"
+    fi
+}
+
+# Function to clean up on exit
+cleanup() {
+    log_message "Script terminated by user after running for $(format_duration $(($(date +%s) - script_start_time)))"
+    log_message "Final stats - Option 1: $last_option1, Option 2: $last_option2, Total: $last_total"
+    log_message "Total requests: $request_count"
+    echo -e "\n\033[1;34mScript terminated. Logs saved to $LOG_DIR\033[0m"
+    exit 0
+}
+
+# Set trap for clean exit
+trap cleanup SIGINT SIGTERM
+
+# Function to display the ASCII art logo with quick animations that cycle each time
+display_logo() {
+    # Get a cycling animation style based on iteration count
+    local anim_style=$((iteration_count % 5))
+
+    # Basic logo lines
+    local logo=(
+        "██╗    ██╗██╗  ██╗    ██████╗  ██████╗  ██████╗  ██████╗ "
+        "██║    ██║██║ ██╔╝    ██╔═══██╗██╔═══██╗██╔═══██╗██╔═══██╗"
+        "██║ █╗ ██║█████╔╝     ╚█████╔╝██║   ██║██║   ██║██║   ██║"
+        "██║███╗██║██╔═██╗      ╚═══██╗██║   ██║██║   ██║██║   ██║"
+        "╚███╔███╔╝██║  ██╗    ██████╔╝╚██████╔╝╚██████╔╝╚██████╔╝"
+        " ╚══╝╚══╝ ╚═╝  ╚═╝    ╚═════╝  ╚═════╝  ╚═════╝  ╚═════╝ "
+    )
+
+    # Always start with a newline for consistent spacing
+    echo ""
+
+    # Quickly apply different visual styles based on the current iteration
+    case $anim_style in
+        0) # Standard red
+            echo -e "\033[1;31m"
+            for line in "${logo[@]}"; do
+                echo "$line"
+            done
+            echo -e "\033[0m"
+            ;;
+
+        1) # Color pulse - gradient red to yellow
+            for i in {0..5}; do
+                # Color gradient from red to yellow
+                local color=$((31 + (i % 2)))
+                echo -e "\033[1;${color}m${logo[$i]}\033[0m"
+            done
+            echo ""  # Add a newline after logo
+            ;;
+
+        2) # Inverted colors
+            echo -e "\033[7;31m"  # Reverse video (inverted)
+            for line in "${logo[@]}"; do
+                echo "$line"
+            done
+            echo -e "\033[0m"
+            ;;
+
+        3) # Bold flashing effect
+            for i in {0..5}; do
+                if [ $((i % 2)) -eq 0 ]; then
+                    echo -e "\033[1;31m${logo[$i]}\033[0m"  # Bright red
+                else
+                    echo -e "\033[0;31m${logo[$i]}\033[0m"  # Normal red
+                fi
+            done
+            echo ""  # Add a newline after logo
+            ;;
+
+        4) # Cool blue variation
+            echo -e "\033[1;34m"  # Blue
+            for line in "${logo[@]}"; do
+                echo "$line"
+            done
+            echo -e "\033[0m"
+            ;;
+    esac
+
+    # Always add another newline after the logo
+    echo ""
+
+    # Print the standard info text without animation
+    echo "Press Ctrl+C (Windows/Linux) or Command+C (Mac) to exit."
+    echo "Using: Poll ID=$POLL_ID, Option ID=$OPTION_ID, Sleep Running=$SLEEP_RUNNING, Sleep Waiting=$SLEEP_WAITING, Randomness=$SLEEP_RANDOMNESS%"
+
+    if [ "$DEBUG_MODE" -eq 1 ]; then
+        echo -e "\033[1;33mDEBUG MODE ENABLED\033[0m"
+    fi
+
+    echo -e "\033[1;34mLogging enabled. Check $LOG_DIR directory for logs.\033[0m"
+    echo "" # Empty line for spacing
+}
 
 # Initialize variables to store last known values
 last_option1=0
@@ -77,11 +201,14 @@ request_count=0
 last_request_time=$(date +%s)
 requests_per_second=0
 iteration_count=0
+vote_start_time=$(date +%s)
+vote_start_count=0
+votes_contributed=0
 
 # Initialize arrays for historical data
-declare -a option1_history
-declare -a option2_history
-declare -a timestamps
+declare -a option1_history=()
+declare -a option2_history=()
+declare -a timestamps=()
 
 # Function to calculate percentage
 calculate_percentage() {
@@ -128,16 +255,88 @@ format_duration() {
     fi
 }
 
+# Function to display simple data for debugging
+draw_simple_graph() {
+    if [ "$DEBUG_MODE" -eq 1 ] || [ "${1:-}" = "force" ]; then
+        echo "===== Data Debug ====="
+        echo "Total data points: ${#option1_history[@]}"
+
+        if [ ${#option1_history[@]} -eq 0 ]; then
+            echo "No data available yet."
+            return
+        fi
+
+        echo "Latest 5 data points (Option1 / Option2) [Time]:"
+        local start=$(( ${#option1_history[@]} > 5 ? ${#option1_history[@]} - 5 : 0 ))
+
+        for ((i=start; i<${#option1_history[@]}; i++)); do
+            local time_str=$(format_timestamp ${timestamps[$i]})
+            echo "  [$i] ${option1_history[$i]} / ${option2_history[$i]} [$time_str]"
+        done
+
+        if [ ${#option1_history[@]} -gt 5 ]; then
+            local first_time=$(format_timestamp ${timestamps[0]})
+            echo "First data point: ${option1_history[0]} / ${option2_history[0]} [$first_time]"
+        fi
+        echo "===== End Debug ====="
+    fi
+}
+
+# Function to check poll status
+check_poll_status() {
+    log_message "Checking poll status for ID=$POLL_ID"
+    status_log="$LOG_DIR/poll_status_$(date +%Y%m%d_%H%M%S).log"
+
+    # Try to get poll information with a GET request
+    poll_info=$(curl -s -v "https://www.wroclaw.pl/api/quiz/api/polls/$POLL_ID" \
+    -H "Accept: application/json" \
+    -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+    2> "$status_log")
+
+    echo "$poll_info" > "${status_log}_response.json"
+
+    if [ -n "$poll_info" ]; then
+        log_message "Successfully retrieved poll information"
+        log_debug "Poll info: $poll_info"
+
+        # Check if the poll is active
+        if echo "$poll_info" | grep -q '"active":true'; then
+            log_message "Poll $POLL_ID is currently active"
+            return 0
+        else
+            log_message "ERROR: Poll $POLL_ID appears to be inactive"
+            echo -e "\n\033[1;31mError: Poll $POLL_ID is not active. Voting may not be possible.\033[0m"
+            return 1
+        fi
+    else
+        log_message "ERROR: Failed to retrieve poll information"
+        echo -e "\n\033[1;31mError: Could not retrieve poll information. The API endpoint may have changed.\033[0m"
+        return 2
+    fi
+}
+
 # Function to draw an ASCII graph
 draw_graph() {
+    clear
+    display_logo
+
     local width=$GRAPH_WIDTH
     local height=$GRAPH_HEIGHT
     local count=${#option1_history[@]}
+
+    # Ensure height is not zero
+    if [ "$height" -le 0 ]; then
+        height=30
+        log_debug "WARNING: Graph height was invalid, reset to $height"
+    fi  # Fixed the syntax error: } -> fi
+
+    log_debug "Drawing graph with dimensions: width=$width, height=$height, data points=$count"
 
     # Print current stats
     echo ""
     echo "===== Vote History Graph ====="
     echo "Time span: $(format_duration $(($(date +%s) - script_start_time)))"
+    echo "Data points collected: $count"
 
     if [ $count -eq 0 ]; then
         echo "No data collected yet. Starting to collect data..."
@@ -163,95 +362,188 @@ draw_graph() {
         # Print legend
         echo -e "         Legend: \033[1;32m+\033[0m Option 1, \033[1;31mo\033[0m Option 2"
         echo ""
+
+        # Show debug graph if in debug mode
+        draw_simple_graph
         return
     fi
 
-    # Find min and max values for scaling
-    local min_value=999999999
-    local max_value=0
+    # Find min and max values for y-axis scaling
+    local max_option1=0
+    local max_option2=0
+    local min_option1=${option1_history[0]}
+    local min_option2=${option2_history[0]}
 
-    # Get min/max values for scaling
     for i in $(seq 0 $((count-1))); do
-        if [ ${option1_history[$i]} -lt $min_value ]; then min_value=${option1_history[$i]}; fi
-        if [ ${option2_history[$i]} -lt $min_value ]; then min_value=${option2_history[$i]}; fi
-        if [ ${option1_history[$i]} -gt $max_value ]; then max_value=${option1_history[$i]}; fi
-        if [ ${option2_history[$i]} -gt $max_value ]; then max_value=${option2_history[$i]}; fi
+        # Update max values
+        if [ ${option1_history[$i]} -gt $max_option1 ]; then
+            max_option1=${option1_history[$i]}
+        fi
+        if [ ${option2_history[$i]} -gt $max_option2 ]; then
+            max_option2=${option2_history[$i]}
+        fi
+
+        # Update min values
+        if [ ${option1_history[$i]} -lt $min_option1 ]; then
+            min_option1=${option1_history[$i]}
+        fi
+        if [ ${option2_history[$i]} -lt $min_option2 ]; then
+            min_option2=${option2_history[$i]}
+        fi
     done
 
-    # Add some padding
-    local range=$((max_value - min_value))
-    if [ $range -eq 0 ]; then range=1; fi
-    min_value=$((min_value - range / 10))
-    max_value=$((max_value + range / 10))
-    range=$((max_value - min_value))
+    # Use the overall min and max for the graph with padding to improve visualization
+    local min_val=$(( min_option1 < min_option2 ? min_option1 : min_option2 ))
+    local max_val=$(( max_option1 > max_option2 ? max_option1 : max_option2 ))
 
-    echo "Min votes: $min_value, Max votes: $max_value"
-    echo "Current diff: Option 1 - Option 2 = $((last_option1 - last_option2)) votes"
+    # Add a small margin to min/max using integer arithmetic
+    local range_padding=$(( (max_val - min_val) / 10 ))
+    if [ "$range_padding" -eq "0" ]; then
+        range_padding=10  # Minimum padding
+    fi
+
+    min_val=$((min_val - range_padding))
+    max_val=$((max_val + range_padding))
+
+    # Calculate vote trends
+    local trend_option1="STABLE"
+    local trend_option2="STABLE"
+    local trend_threshold=10
+
+    if [ $count -gt 5 ]; then
+        # Get the last few data points to detect trends
+        local recent_option1=${option1_history[$((count-1))]}
+        local older_option1=${option1_history[$((count-5))]}
+        local recent_option2=${option2_history[$((count-1))]}
+        local older_option2=${option2_history[$((count-5))]}
+
+        # Calculate change rates
+        local change_rate1=$((recent_option1 - older_option1))
+        local change_rate2=$((recent_option2 - older_option2))
+
+        # Determine trends
+        if [ $change_rate1 -gt $trend_threshold ]; then
+            trend_option1="↑ RISING"
+        elif [ $change_rate1 -lt $((-trend_threshold)) ]; then
+            trend_option1="↓ FALLING"
+        fi
+
+        if [ $change_rate2 -gt $trend_threshold ]; then
+            trend_option2="↑ RISING"
+        elif [ $change_rate2 -lt $((-trend_threshold)) ]; then
+            trend_option2="↓ FALLING"
+        fi
+
+        # Display trends in status line
+        echo -e "Trends - Option 1: \033[1;36m$trend_option1\033[0m, Option 2: \033[1;36m$trend_option2\033[0m"
+    fi
+
+    # Ensure min and max are not the same to avoid division by zero
+    if [ $min_val -eq $max_val ]; then
+        min_val=$((min_val - 10))
+        max_val=$((max_val + 10))
+    fi
+
+    # Calculate the range and value per row
+    local range=$((max_val - min_val))
+
+    # Display the difference between options
+    local diff=$((last_option1 - last_option2))
+    if [ $diff -gt 0 ]; then
+        echo -e "Current diff: \033[1;32m+$diff\033[0m (Option 1 leading)"
+    elif [ $diff -lt 0 ]; then
+        echo -e "Current diff: \033[1;31m$diff\033[0m (Option 2 leading)"
+    else
+        echo -e "Current diff: $diff (Tied)"
+    fi
     echo ""
 
-    # Create an empty graph canvas
-    local graph=()
+    # Initialize the graph grid
+    declare -A grid
     for y in $(seq 0 $((height-1))); do
-        graph[$y]=""
-        for x in $(seq 1 $width); do
-            graph[$y]="${graph[$y]} "
+        for x in $(seq 0 $((width-1))); do
+            grid[$y,$x]=" "
         done
     done
 
-    # Calculate effective width based on data points
-    local effective_width=0
-    if [ $count -gt 1 ]; then
-        # Use at most width, but for small counts, use just enough space
-        effective_width=$(( count < width ? count : width ))
-    else
-        effective_width=1  # For single point, use minimal width
+    # Calculate x positions - place points consecutively
+    # Use the rightmost part of the graph for newest points
+    local start_x=0
+    if [ $count -gt $width ]; then
+        start_x=$((count - width))
     fi
 
-    # Plot points across the used width
+    # Plot the data points for option 1 and option 2
     for i in $(seq 0 $((count-1))); do
-        # Calculate exact position based on the effective width
-        local x=0
-        if [ $count -gt 1 ]; then
-            x=$(( i * (effective_width-1) / (count-1) ))
-            if [ $x -ge $effective_width ]; then x=$((effective_width-1)); fi
+        # Calculate x coordinate - consecutive placement
+        if [ $i -lt $start_x ]; then
+            continue  # Skip points that won't fit in the graph width
         fi
 
-        # Calculate y position for option1
-        local option1_val=${option1_history[$i]}
-        local y1=$(( height - 1 - (option1_val - min_value) * (height-1) / range ))
+        local x=$((i - start_x))
+        if [ $x -ge $width ]; then
+            continue  # Safety check
+        fi
+
+        # Calculate y coordinates safely with integer math when possible
+        # First attempt with bc but ensure we get an integer by removing decimal part
+        local y1_calc=$(echo "scale=0; ($height - 1) - (${option1_history[$i]} - $min_val) * ($height - 1) / $range" | bc | sed 's/\..*//')
+        local y1=$y1_calc
+        if [ -z "$y1" ] || [ "$y1" = "" ]; then
+            # Fallback to bash integer math if bc has issues
+            y1=$(( (height - 1) - (${option1_history[$i]} - min_val) * (height - 1) / range ))
+        fi
+
+        # Apply bounds checking
         if [ $y1 -lt 0 ]; then y1=0; fi
         if [ $y1 -ge $height ]; then y1=$((height-1)); fi
 
-        # Place green symbol for option1 (fixed)
-        local line=${graph[$y1]}
-        graph[$y1]="${line:0:$x}+${line:$((x+1))}"
+        # Repeat for option 2
+        local y2_calc=$(echo "scale=0; ($height - 1) - (${option2_history[$i]} - $min_val) * ($height - 1) / $range" | bc | sed 's/\..*//')
+        local y2=$y2_calc
+        if [ -z "$y2" ] || [ "$y2" = "" ]; then
+            # Fallback to bash integer math
+            y2=$(( (height - 1) - (${option2_history[$i]} - min_val) * (height - 1) / range ))
+        fi
 
-        # Calculate y position for option2
-        local option2_val=${option2_history[$i]}
-        local y2=$(( height - 1 - (option2_val - min_value) * (height-1) / range ))
+        # Apply bounds checking
         if [ $y2 -lt 0 ]; then y2=0; fi
         if [ $y2 -ge $height ]; then y2=$((height-1)); fi
 
-        # Place red symbol for option2 (fixed)
-        local line=${graph[$y2]}
-        graph[$y2]="${line:0:$x}o${line:$((x+1))}"
+        # Plot points with appropriate symbols
+        grid[$y1,$x]="+"  # Option 1
+        grid[$y2,$x]="o"  # Option 2
     done
 
-    # Add y-axis labels and draw graph with colored symbols
+    # Draw the graph grid
     for y in $(seq 0 $((height-1))); do
-        local value=$((min_value + (height - 1 - y) * range / (height-1)))
-        local line=${graph[$y]}
+        # Calculate the value for this row safely
+        local value_calc=$(echo "scale=0; $max_val - ($y * $range / ($height - 1))" | bc | sed 's/\..*//')
+        local value=$value_calc
+        if [ -z "$value" ] || [ "$value" = "" ]; then
+            # Fallback to bash integer math
+            value=$(( max_val - (y * range / (height - 1)) ))
+        fi
 
-        # Create a temporary file to process line with proper colors
-        temp_file=$(mktemp)
-        echo "$line" > "$temp_file"
+        # Y-axis labels (show values at certain intervals - every 5 lines or at first/last)
+        if [ $y -eq 0 ] || [ $y -eq $((height-1)) ] || [ $((y % 5)) -eq 0 ]; then
+            printf "%8s |" "$value"
+        else
+            printf "%8s |" ""
+        fi
 
-        # Process the line with sed to add colors
-        processed_line=$(sed 's/+/\\033[1;32m+\\033[0m/g' "$temp_file" | sed 's/o/\\033[1;31mo\\033[0m/g')
-        rm "$temp_file"
-
-        # Print the line with proper coloring
-        printf "%8d |%s\n" $value "$(echo -e "$processed_line")"
+        # Draw the actual data for this row
+        for x in $(seq 0 $((width-1))); do
+            local char="${grid[$y,$x]}"
+            if [ "$char" = "+" ]; then
+                printf "\033[1;32m+\033[0m"  # Green for option 1
+            elif [ "$char" = "o" ]; then
+                printf "\033[1;31mo\033[0m"  # Red for option 2
+            else
+                printf " "
+            fi
+        done
+        printf "\n"
     done
 
     # Print x-axis
@@ -261,17 +553,58 @@ draw_graph() {
     done
     printf "\n"
 
+    # Calculate times for x-axis labeling
+    local first_idx=$start_x
+    local middle_idx=$((start_x + (count - start_x) / 2))
+    local last_idx=$((count - 1))
+
+    # Ensure indexes are valid
+    if [ $first_idx -lt 0 ]; then first_idx=0; fi
+    if [ $middle_idx -ge $count ]; then middle_idx=$((count-1)); fi
+    if [ $last_idx -ge $count ]; then last_idx=$((count-1)); fi
+
+    # Get timestamps
+    local first_time=$(format_timestamp ${timestamps[$first_idx]})
+    local middle_time=$(format_timestamp ${timestamps[$middle_idx]})
+    local last_time=$(format_timestamp ${timestamps[$last_idx]})
+
+    # Calculate positions for the time labels
+    local first_pos=0
+    local middle_pos=$((width / 2))
+    local last_pos=$((width - 1))
+
+    # Print the three labels with appropriate spacing
+    printf "         %s" "$first_time"
+    if [ $count -gt 1 ]; then
+        printf "%*s%s" $(( middle_pos - ${#first_time} - ${#middle_time}/2 )) "" "$middle_time"
+        printf "%*s%s\n" $(( last_pos - middle_pos - ${#middle_time}/2 - ${#last_time} )) "" "$last_time"
+    else
+        printf "\n"
+    fi
+
     # Print legend with properly displayed colors
     echo -e "         Legend: \033[1;32m+\033[0m Option 1, \033[1;31mo\033[0m Option 2"
     echo ""
+
+    echo "Votes contributed: $votes_contributed (Rate: $votes_per_minute votes/min)"
+
+    # Show simple graph for debugging
+    draw_simple_graph
 }
 
 # Function to send POST request and get response
 send_request() {
+    # Log the request attempt
+    log_message "Sending request to Poll ID=$POLL_ID, Option ID=$OPTION_ID"
+
     # Create a temporary file to store the response
     temp_file=$(mktemp)
+    request_log="$LOG_DIR/request_$(date +%Y%m%d_%H%M%S).log"
 
-    # Send request and capture both status code and response
+    # Log the full curl command
+    log_debug "Executing curl request: curl -X POST 'https://www.wroclaw.pl/api/quiz/api/polls/$POLL_ID/option/$OPTION_ID' -H 'Content-Type: application/json' -H 'User-Agent: Mozilla/5.0...' -d '{}'"
+
+    # Send request with verbose output to log file and capture both status code and response
     status_code=$(curl -X POST "https://www.wroclaw.pl/api/quiz/api/polls/$POLL_ID/option/$OPTION_ID" \
     -H "Content-Type: application/json" \
     -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
@@ -279,10 +612,69 @@ send_request() {
     -H "Origin: https://www.wroclaw.pl" \
     -H "Referer: https://www.wroclaw.pl/" \
     -d '{}' \
+    -v \
     -s -w "%{http_code}" \
-    -o "$temp_file")
+    -o "$temp_file" 2> "$request_log")
+
+    if [ "$AUTO_ADJUST" -eq 1 ] && [ "$last_status" = "RUNNING" ]; then
+        # Check if we're getting too many errors
+        local error_rate=$((100 * request_errors / (request_count + 1)))
+
+        if [ $error_rate -gt 20 ]; then
+            # Too many errors, increase sleep time
+            SLEEP_RUNNING=$(echo "scale=2; $SLEEP_RUNNING * 1.2" | bc)
+            log_message "Auto-adjusted sleep time to $SLEEP_RUNNING due to high error rate"
+        elif [ $error_rate -lt 5 ] && (( $(echo "$SLEEP_RUNNING > 0.2" | bc -l) )); then
+            # Very few errors, try to speed up slightly
+            SLEEP_RUNNING=$(echo "scale=2; $SLEEP_RUNNING * 0.9" | bc)
+            log_message "Auto-adjusted sleep time to $SLEEP_RUNNING due to low error rate"
+        fi
+    fi
+
+    if [ "$status_code" -ne 200 ] && [ "$AUTO_RETRY" -eq 1 ]; then
+        local retry_count=0
+        local max_retries=3
+
+        while [ "$status_code" -ne 200 ] && [ "$retry_count" -lt "$max_retries" ]; do
+            log_message "Request failed with status $status_code. Retrying ($((retry_count+1))/$max_retries)..."
+            sleep 1
+
+            # Retry the request
+            status_code=$(curl -X POST "https://www.wroclaw.pl/api/quiz/api/polls/$POLL_ID/option/$OPTION_ID" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" \
+            -H "Accept: application/json" \
+            -H "Origin: https://www.wroclaw.pl" \
+            -H "Referer: https://www.wroclaw.pl/" \
+            -d '{}' \
+            -v \
+            -s -w "%{http_code}" \
+            -o "$temp_file" 2>> "$request_log")
+
+            retry_count=$((retry_count + 1))
+            response=$(cat "$temp_file")
+        done
+
+        if [ "$status_code" -eq 200 ]; then
+            log_message "Request succeeded after $retry_count retries"
+        else
+            log_message "Request failed after $retry_count retries"
+        fi
+    fi
+
+    if [ "$status_code" -eq "200" ] && [ "$DEBUG_MODE" -ne 1 ]; then
+      rm -f $request_log
+    else
+      log_message "Request failed with status code $status_code"
+    fi
 
     response=$(cat "$temp_file")
+
+    # Log the response details
+    log_message "Response received - Status: $status_code, Length: ${#response} bytes"
+    log_debug "Response body: $response"
+
+    # Clean up temp file
     rm "$temp_file"
 
     # Update request count and calculate requests per second
@@ -291,29 +683,89 @@ send_request() {
     if [ "$current_time" -gt "$last_request_time" ]; then
         requests_per_second=$((request_count / (current_time - last_request_time)))
     fi
+    last_request_time=$current_time
 
     # Parse statistics, using last known values if parsing fails
     new_option1=$(echo $response | grep -o '"count":[0-9]*' | head -1 | cut -d':' -f2)
     new_option2=$(echo $response | grep -o '"count":[0-9]*' | tail -1 | cut -d':' -f2)
     new_total=$(echo $response | grep -o '"statistics":[0-9]*' | cut -d':' -f2)
 
+    if [[ "$new_option1" =~ ^[0-9]+$ ]] && [[ "$new_option2" =~ ^[0-9]+$ ]]; then
+        # Calculate votes contributed
+        if [ "$vote_start_count" -eq 0 ]; then
+            vote_start_count=$last_total
+        else
+            votes_contributed=$((last_total - vote_start_count))
+        fi
+
+        # Calculate votes per minute
+        local elapsed_minutes=$(echo "scale=2; ($(date +%s) - $vote_start_time) / 60" | bc)
+        if (( $(echo "$elapsed_minutes > 0" | bc -l) )); then
+            votes_per_minute=$(echo "scale=2; $votes_contributed / $elapsed_minutes" | bc)
+            # Format to max 2 decimal places
+            votes_per_minute=$(printf "%.2f" $votes_per_minute)
+        else
+            votes_per_minute="0.00"
+        fi
+    fi
+
+    log_debug "Parsed values - Option 1: $new_option1, Option 2: $new_option2, Total: $new_total"
+
     # Update values only if we got valid numbers
     if [[ "$new_option1" =~ ^[0-9]+$ ]] && [[ "$new_option2" =~ ^[0-9]+$ ]] && [[ "$new_total" =~ ^[0-9]+$ ]]; then
         last_option1=$new_option1
         last_option2=$new_option2
         last_total=$new_total
-    fi
 
-    # Add data to history arrays
-    option1_history+=($last_option1)
-    option2_history+=($last_option2)
-    timestamps+=($(date +%s))
+        # Add data to history arrays
+        option1_history+=($last_option1)
+        option2_history+=($last_option2)
+        timestamps+=($(date +%s))
 
-    # Keep arrays at specified size
-    if [ ${#option1_history[@]} -gt $HISTORY_SIZE ]; then
-        option1_history=("${option1_history[@]:1}")
-        option2_history=("${option2_history[@]:1}")
-        timestamps=("${timestamps[@]:1}")
+        # Keep arrays at specified size
+        if [ ${#option1_history[@]} -gt $HISTORY_SIZE ]; then
+            option1_history=("${option1_history[@]:1}")
+            option2_history=("${option2_history[@]:1}")
+            timestamps=("${timestamps[@]:1}")
+        fi
+
+        log_debug "Added new data point #${#option1_history[@]}: Option1=$last_option1, Option2=$last_option2"
+    else
+        log_message "ERROR: Failed to parse valid numbers from response"
+        log_debug "Invalid response format: $response"
+
+        # If in debug mode, generate dummy data for testing
+        if [ "$DEBUG_MODE" -eq 1 ]; then
+            log_debug "ADDING DUMMY DATA FOR TESTING"
+
+            # Use incremental dummy data to create a visible pattern
+            if [ ${#option1_history[@]} -eq 0 ]; then
+                new_option1=1000
+                new_option2=800
+            else
+                new_option1=$((last_option1 + 5 + RANDOM % 10))
+                new_option2=$((last_option2 + 3 + RANDOM % 8))
+            fi
+            new_total=$((new_option1 + new_option2))
+
+            last_option1=$new_option1
+            last_option2=$new_option2
+            last_total=$new_total
+
+            # Add dummy data to history arrays
+            option1_history+=($last_option1)
+            option2_history+=($last_option2)
+            timestamps+=($(date +%s))
+
+            # Keep arrays at specified size
+            if [ ${#option1_history[@]} -gt $HISTORY_SIZE ]; then
+                option1_history=("${option1_history[@]:1}")
+                option2_history=("${option2_history[@]:1}")
+                timestamps=("${timestamps[@]:1}")
+            fi
+
+            log_debug "Added dummy data point #${#option1_history[@]}: Option1=$last_option1, Option2=$last_option2"
+        fi
     fi
 
     # Set status based on HTTP response code
@@ -321,41 +773,46 @@ send_request() {
         if [ "$last_status" = "WAITING" ]; then
             # Calculate waiting duration when transitioning from WAITING to RUNNING
             last_waiting_duration=$((current_time - waiting_start_time))
-            running_start_time=$current_time  # Start new running period
-            # Store the starting values for this running period
+            running_start_time=$current_time
             start_option1=$last_option1
             start_option2=$last_option2
             start_total=$last_total
+            log_message "State changed: WAITING → RUNNING after $last_waiting_duration seconds"
         fi
         last_status="RUNNING"
     else
+        request_errors=$((request_errors + 1))
+        log_message "Request failed with status $status_code"
+
         if [ "$last_status" = "RUNNING" ]; then
-            # Calculate and store the last running duration when transitioning from RUNNING to WAITING
             last_running_duration=$((current_time - running_start_time))
-            # Store the gains from the completed run
             last_completed_gain1=$((last_option1 - start_option1))
             last_completed_gain2=$((last_option2 - start_option2))
-            # Start tracking waiting time
             waiting_start_time=$current_time
+            log_message "State changed: RUNNING → WAITING after $last_running_duration seconds"
+            log_message "Run gains: Option 1 +$last_completed_gain1, Option 2 +$last_completed_gain2"
         fi
         last_status="WAITING"
     fi
+
+    # Increment iteration count
+    iteration_count=$((iteration_count + 1))
+    log_debug "Iteration count: $iteration_count, Graph interval: $GRAPH_INTERVAL"
 
     # Calculate percentages
     percent1=$(calculate_percentage $last_option1 $last_total)
     percent2=$(calculate_percentage $last_option2 $last_total)
 
-    # Calculate vote gains from the start of the running period
+    # Calculate vote gains
     if [ "$last_status" = "RUNNING" ]; then
         gain1=$((last_option1 - start_option1))
         gain2=$((last_option2 - start_option2))
     else
-        # Use the gains from the last completed run
         gain1=$last_completed_gain1
         gain2=$last_completed_gain2
     fi
 
-    # Determine colors based on which option is leading in total votes
+    # Determine colors based on which option is leading
     if [ "$last_option1" -gt "$last_option2" ]; then
         color1="\033[1;32m"  # Green for option 1
         color2="\033[0m"     # Default for option 2
@@ -367,42 +824,76 @@ send_request() {
         color2="\033[0m"     # Default color for option 2
     fi
 
-    # Determine colors for gains
-    if [ "$gain1" -gt "$gain2" ]; then
-        gain_color1="\033[1;32m"  # Green for gain 1
-        gain_color2="\033[0m"     # Default for gain 2
-    elif [ "$gain2" -gt "$gain1" ]; then
-        gain_color1="\033[0m"     # Default for gain 1
-        gain_color2="\033[1;31m"  # Red for gain 2
-    else
-        gain_color1="\033[0m"     # Default color for gain 1
-        gain_color2="\033[0m"     # Default color for gain 2
-    fi
-
     # Format durations
     formatted_waiting_duration=$(format_duration $last_waiting_duration)
     formatted_last_running_duration=$(format_duration $last_running_duration)
 
-    # Increment iteration count
-    iteration_count=$((iteration_count + 1))
+    local progress_chars=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")  # Simple ASCII spinner characters
+    local progress_idx=$((iteration_count % ${#progress_chars[@]}))
+    local progress_char=${progress_chars[$progress_idx]}
 
-    # Check if we need to redraw the graph (first run or interval reached)
+    # Check if we need to redraw the graph
     if [ $iteration_count -eq 1 ] || [ $((iteration_count % GRAPH_INTERVAL)) -eq 0 ]; then
-        # Clear screen for graph display
-        clear
+        log_message "Redrawing graph at iteration $iteration_count"
         draw_graph
-    else
-        # Clear current line and display updated statistics
-        printf "\r\033[K"  # Clear current line
     fi
 
-    # Display all statistics in a single line using last known values, with status first
+    # Display status line with spinner at the end
     if [ "$last_status" = "RUNNING" ]; then
-        echo -en "Status: \033[1;32m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [${gain_color1}+$gain1\033[0m] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [${gain_color2}+$gain2\033[0m] | Total: $last_total | Last Wait: $formatted_waiting_duration | Last Run: $formatted_last_running_duration | RPS: $requests_per_second"
+        echo -en "\rStatus: \033[1;32m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [+$gain1] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [+$gain2] | Total: $last_total | RPS: $requests_per_second  \033[1;36m$progress_char\033[0m\n"
     else
-        echo -en "Status: \033[1;31m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [${gain_color1}+$gain1\033[0m] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [${gain_color2}+$gain2\033[0m] | Total: $last_total | Last Wait: $formatted_waiting_duration | Last Run: $formatted_last_running_duration | RPS: $requests_per_second"
+        echo -en "\rStatus: \033[1;31m$last_status\033[0m | Option 1: $last_option1 (${color1}$percent1%\033[0m) [+$gain1] | Option 2: $last_option2 (${color2}$percent2%\033[0m) [+$gain2] | Total: $last_total | RPS: $requests_per_second  \033[1;36m$progress_char\033[0m\n"
     fi
 }
+
+update_terminal_size() {
+    local new_width=$(( $(tput cols 2>/dev/null || echo 120) - 12 ))
+    local new_height=$(tput lines 2>/dev/null || echo 40)
+
+    # More proportional height adjustment: use 60% of terminal height for graph
+    new_height=$(( (new_height * 60) / 100 ))
+    if [ $new_height -lt 10 ]; then
+        new_height=10
+    fi
+
+    if [ $new_width -ne $GRAPH_WIDTH ] || [ $new_height -ne $GRAPH_HEIGHT ]; then
+        log_message "Terminal size changed. Adjusting graph: ${new_width}x${new_height}"
+        GRAPH_WIDTH=$new_width
+        GRAPH_HEIGHT=$new_height
+        return 0
+    fi
+    return 1
+}
+
+read_key_input() {
+    if read -t 0.1 -n 1 key; then
+        case "$key" in
+            q|Q)
+                echo "Quitting by user request (q pressed)..."
+                cleanup
+                ;;
+            r|R)
+                echo "Forcing graph redraw (r pressed)..."
+                draw_graph
+                ;;
+            c|C)
+                echo "Clearing history and starting fresh (c pressed)..."
+                option1_history=()
+                option2_history=()
+                timestamps=()
+                draw_graph
+                ;;
+        esac
+    fi
+}
+
+# Display initial logo and info
+display_logo
+
+# Check poll status (if not in debug mode)
+if [ "$DEBUG_MODE" -ne 1 ]; then
+    check_poll_status
+fi
 
 # Display the empty graph at startup
 clear
@@ -410,7 +901,13 @@ draw_graph
 
 # Main loop
 while true; do
+    read_key_input
     send_request
+
+    if update_terminal_size; then
+        # Force redraw if terminal size changed
+        draw_graph
+    fi
 
     if [ "$last_status" = "RUNNING" ]; then
         sleep $(apply_sleep_randomness $SLEEP_RUNNING)
