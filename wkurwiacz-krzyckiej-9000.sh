@@ -179,4 +179,8 @@ send_request() {
 # Main loop
 while true; do
     send_request
+    sleep 0.5
+    if [ "$last_status" = "WAITING" ]; then
+        sleep 2
+    fi
 done 
